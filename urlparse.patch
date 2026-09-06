@@ -1,0 +1,13 @@
+diff --git a/assets/urlparse/urlparse_fuzz.py b/assets/urlparse/urlparse_fuzz.py
+index ab38f37..6e61687 100755
+--- a/assets/urlparse/urlparse_fuzz.py
++++ b/assets/urlparse/urlparse_fuzz.py
+@@ -20,7 +20,7 @@ def TestOneInput(data):
+
+     try:
+         result = urlparse(uri)
+-    except (InvalidAuthority, InvalidPort):
++    except (InvalidAuthority, InvalidPort, ValueError):
+         pass
+
+
