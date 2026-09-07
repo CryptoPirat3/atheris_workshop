@@ -27,6 +27,7 @@ docker run -it --rm --name atheris_workshop -p 5555:5555 -v "$(pwd)/out:/out" at
 - `--rm` удаляет контейнер после завершения работы.
 - `--name` задаёт имя контейнера.
 - `-v` подключает локальный каталог `out` к `/out` внутри контейнера. Найденные сбои сохранятся на хосте.
+- `p` используется для проброса портов. он публикует порт контейнера на хост-машине, делая сервис внутри контейнера доступным снаружи
 
 ## 3. Минимизация начального корпуса
 
@@ -61,7 +62,7 @@ sys.path.insert(0, "/src/rfc3986/src")
 
 ### 4.2
 Далее мы инструментируем библиотеки, которые хотим протестировать.
-- предыдущие импорты мы делали без инструментации, т.к. от этих библиотек не зависит безпасность исследуемых функций
+- предыдущие импорты мы делали без инструментации, т.к. мы незаинтересованы в их тестировании
 - Исключения мы импортируем для последующего отлавливания (п 4.3)
 
 ``` python
@@ -74,7 +75,7 @@ with atheris.instrument_imports():
 Далее мы пишем саму функцию-обертку. В ней должна использоваться функция, работу которой мы проверяем.
 
 - `provider = atheris.FuzzerDataProvider(data)` позволяет представить поток байтов от фаззера как отдельные типизированные переменные.
-- `uri = provider.ConsumeUnicodeNoSurrogates(1024)` выделяет из всего потока байтов от фаззера 1024 символа, которые будут соответствовать unicode-кодировке. Это сделано для того, чтобы фаззер не отлавливал случаи, когда нарушается логика декодирования, а не самой функции.
+- `uri = provider.ConsumeUnicodeNoSurrogates(1024)` выделяет из всего потока байтов от фаззера 1024 символа, которые будут соответствовать unicode-кодировке.
 
 - код ниже является основным блоком проверки функции. Мы пытаемся создать объект содержащий элементы url-строки, с помощью целевой функции. Если Все отрабатывает штатно, то функция завершается успехом. Если же функция завершается падением, то все зависит от того, какое исключение мы отловили.
     - Если появляется исключение, возможное появление которого предусмотрел разработчик, то это падение нас не интересует. Поэтому, мы отлавливаем их.
@@ -121,12 +122,14 @@ if __name__ == "__main__":
 | `rss` | Потребление оперативной памяти |
 
 ```bash
-python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -max_total_time=300 -artifact_prefix=/out/
+python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -max_total_time=300 -max_len=1024 -artifact_prefix=/out/
 ```
 
-`-artifact_prefix=/out/` задаёт каталог для файлов, воспроизводящих сбои, тайм-ауты и другие ошибки.
+`-artifact_prefix=/out/` задает каталог для файлов, воспроизводящих сбои, тайм-ауты и другие ошибки.
 
 `-max_total_time=300` задает время фаззинга в секундах. В нашем случае ваззинг будет проводиться в течение 5 минут
+
+`-max_len=1024` задает максимальную возможную длину тесткейса, который создает фаззер
 
 - Во время запуска Atheris находит необработанное исключение:
 
@@ -182,7 +185,7 @@ git apply urlparse.patch
 ## 8. Повторный запуск
 
 ```bash
-python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -max_total_time=300 -artifact_prefix=/out/
+python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -max_total_time=300 -max_len=1024 -artifact_prefix=/out/
 ```
 
 После исправления фаззер продолжает работу.
@@ -206,7 +209,7 @@ python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -max_t
 ```bash
 ./clean_corpus.sh
 
-python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -max_total_time=300 -artifact_prefix=/out/ -seed=1784132485
+python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -max_total_time=300 -max_len=1024 -artifact_prefix=/out/ -seed=1784132485
 ```
 
 ### Запуск со словарём
@@ -214,7 +217,7 @@ python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -max_t
 ```bash
 ./clean_corpus.sh
 
-python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -dict=assets/urlparse/urlparse.dict -max_total_time=300 -artifact_prefix=/out/ -seed=1784132485
+python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -dict=assets/urlparse/urlparse.dict -max_total_time=300 -max_len=1024 -artifact_prefix=/out/ -seed=1784132485
 ```
 
 - `-dict` подключает словарь токенов к процессу мутации.
