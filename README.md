@@ -7,7 +7,7 @@
 ## 1. Сборка Docker-образа
 
 ```bash
-docker build --network=host -t atheris_workshop:1.0 .
+docker build -t atheris_workshop:1.0 .
 ```
 
 - `--network=host` — использует сеть хоста во время сборки образа.
@@ -19,7 +19,7 @@ docker build --network=host -t atheris_workshop:1.0 .
 ```bash
 mkdir -p out
 
-docker run -it --rm --name atheris_workshop -v "$(pwd)/out:/out" atheris_workshop:1.0 /bin/bash
+docker run -it --rm --name atheris_workshop -p 5555:5555 -v "$(pwd)/out:/out" atheris_workshop:1.0 /bin/bash
 ```
 
 - `mkdir -p` создаёт каталог, если его ещё нет, и не завершается ошибкой, если каталог уже существует.
@@ -28,15 +28,7 @@ docker run -it --rm --name atheris_workshop -v "$(pwd)/out:/out" atheris_worksho
 - `--name` задаёт имя контейнера.
 - `-v` подключает локальный каталог `out` к `/out` внутри контейнера. Найденные сбои сохранятся на хосте.
 
-## 3. Сборка проекта
-
-Внутри контейнера выполните:
-
-```bash
-./build.sh
-```
-
-## 4. Минимизация начального корпуса
+## 3. Минимизация начального корпуса
 
 Создаем каталог для минимизированного корпуса и его резервную копию:
 
@@ -51,6 +43,69 @@ cp assets/urlparse/minimized_corpus/* /tmp/corpus/
 `-merge=1` сохраняет в первом каталоге только входы из последующих каталогов, которые дают уникальное покрытие. В данном стенде число файлов сокращается с 20 до 5 без потери достигнутого покрытия.
 
 Каталог `/tmp/corpus` хранит исходное состояние минимизированного корпуса. Оно понадобится перед повторными запусками, поскольку фаззер добавляет новые входы в первый каталог корпуса.
+
+## 4. Описание обертки
+
+### 4.1 
+В самом начале необходимо импортировать саму библиотеку atheris и стандартные модули python, необходимые для указания пути до проекта.
+Путь до проекта мы указываем ниже следующим образом
+
+``` python
+import atheris
+import os
+import sys
+
+rfc_path = os.path.abspath("/src/rfc3986/")
+sys.path.insert(0, "/src/rfc3986/src")
+```
+
+### 4.2
+Далее мы инструментируем библиотеки, которые хотим протестировать.
+- предыдущие импорты мы делали без инструментации, т.к. от этих библиотек не зависит безпасность исследуемых функций
+- Исключения мы импортируем для последующего отлавливания (п 4.3)
+
+``` python
+with atheris.instrument_imports():
+    from rfc3986 import urlparse
+    from rfc3986.exceptions import InvalidPort, InvalidAuthority
+```
+
+### 4.3
+Далее мы пишем саму функцию-обертку. В ней должна использоваться функция, работу которой мы проверяем.
+
+- `provider = atheris.FuzzerDataProvider(data)` позволяет представить поток байтов от фаззера как отдельные типизированные переменные.
+- `uri = provider.ConsumeUnicodeNoSurrogates(1024)` выделяет из всего потока байтов от фаззера 1024 символа, которые будут соответствовать unicode-кодировке. Это сделано для того, чтобы фаззер не отлавливал случаи, когда нарушается логика декодирования, а не самой функции.
+
+- код ниже является основным блоком проверки функции. Мы пытаемся создать объект содержащий элементы url-строки, с помощью целевой функции. Если Все отрабатывает штатно, то функция завершается успехом. Если же функция завершается падением, то все зависит от того, какое исключение мы отловили.
+    - Если появляется исключение, возможное появление которого предусмотрел разработчик, то это падение нас не интересует. Поэтому, мы отлавливаем их.
+    - Если появляется другое исключение, значит оно может сломать логику программы во время работы и его надо либо отлавливать, либо исправить код так, чтобы это падение больше не появлялось
+
+``` python
+def TestOneInput(data):
+    
+    provider = atheris.FuzzedDataProvider(data)
+    uri = provider.ConsumeUnicodeNoSurrogates(1024)
+
+    try:
+        result = urlparse(uri)
+    except (InvalidAuthority, InvalidPort):
+        pass
+```
+
+### 4.4 далее мы пишем функцию `main`, в которой мы будем запускать процесс фаззинга
+
+- `atheris.Setup(sys.argv, TestOneInput)` настраивает параметры командной строки и задает тестирующую функцию для запуска
+- `atheris.Fuzz()` запускает сам процесс фаззинга
+
+```python
+def main():
+    atheris.Setup(sys.argv, TestOneInput)
+    atheris.Fuzz()
+
+
+if __name__ == "__main__":
+    main()
+```
 
 ## 5. Первый запуск фаззинга
 
@@ -88,8 +143,25 @@ File "/src/rfc3986/src/rfc3986/parseresult.py", line 490, in split_authority
 ```text
 crash-fc9018303318048067e34ff6fa07f5121aef72b5
 ```
+### 5.1 Обработка падений
 
-Минимизация и повторный запуск такого файла описаны в разделе [«Обработка падений»](#обработка-падений).
+Минимизируем найденный вход, сохранив его поведение:
+
+```bash
+python3 assets/urlparse/urlparse_fuzz.py -minimize_crash=1 /out/crash-fc9018303318048067e34ff6fa07f5121aef72b5 -max_total_time=60 -exact_artifact_path=/out/crash-minimized
+```
+
+- `-minimize_crash=1` уменьшает вход, сохраняя воспроизведение сбоя.
+- `-max_total_time=60` ограничивает минимизацию 60 секундами.
+- `-exact_artifact_path` задаёт точный путь итогового файла.
+
+Проверяем минимизированный вход:
+
+```bash
+python3 assets/urlparse/urlparse_fuzz.py /out/crash-minimized
+```
+
+Если минимизация выполнена успешно, программа завершится с тем же исключением `ValueError`.
 
 ## 6. Применение исправления
 
@@ -163,7 +235,7 @@ python3 assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -dict=
 Запускаем фаззер ограниченное число раз, сформируем HTML-отчёт и откроем к нему доступ через HTTP-сервер:
 
 ```bash
-python3 -m coverage run assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -atheris_runs=10000
+python3 -m coverage run assets/urlparse/urlparse_fuzz.py assets/urlparse/minimized_corpus -atheris_runs=$(( 1 + $(ls assets/urlparse/minimized_corpus | wc -l) ))
 
 python3 -m coverage html
 
@@ -176,23 +248,3 @@ python3 -m http.server 5555 --bind 0.0.0.0
 - `--bind 0.0.0.0` разрешает подключение к серверу извне контейнера.
 
 Отчёт доступен по адресу: <http://localhost:5555>.
-
-## Обработка падений
-
-Минимизируем найденный вход, сохранив его поведение:
-
-```bash
-python3 assets/urlparse/urlparse_fuzz.py -minimize_crash=1 /out/crash-fc9018303318048067e34ff6fa07f5121aef72b5 -max_total_time=60 -exact_artifact_path=/out/crash-minimized
-```
-
-- `-minimize_crash=1` уменьшает вход, сохраняя воспроизведение сбоя.
-- `-max_total_time=60` ограничивает минимизацию 60 секундами.
-- `-exact_artifact_path` задаёт точный путь итогового файла.
-
-Проверяем минимизированный вход:
-
-```bash
-python3 assets/urlparse/urlparse_fuzz.py /out/crash-minimized
-```
-
-Если минимизация выполнена успешно, программа завершится с тем же исключением `ValueError`.
